@@ -379,7 +379,7 @@ const processUserDailyReminder = async (user) => {
     return;
   }
 
-  const scheduledTime = preference.dailyReminderTime || "08:00";
+  const scheduledTime = preference.dailyReminderTime || "09:00";
 
   // Never deliver before the user's configured time.
   if (localDateTime.toFormat("HH:mm") < scheduledTime) {
