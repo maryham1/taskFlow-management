@@ -1,0 +1,232 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                      String                  @id @default(cuid())
+  fullName                String
+  email                   String                  @unique
+  password                String
+  emailVerified           Boolean                 @default(false)
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
+  termsAcceptedAt         DateTime?
+  dailyReminderDeliveries DailyReminderDelivery[]
+  deviceRecognitions      DeviceRecognition[]
+  notifications           Notification[]
+  pushTokens              PushToken[]
+  reminders               Reminder[]
+  tasks                   Task[]
+  preference              UserPreference?
+  verificationCodes       VerificationCode[]
+}
+
+model Task {
+  id          String  @id @default(cuid())
+  title       String
+  description String?
+
+  // Task start date and time
+  dueDate   DateTime
+  startTime String
+
+  // Task end date and time
+  // Nullable during migration for existing tasks
+  endDate DateTime?
+  endTime String
+
+  priority       TaskPriority
+  completionMode TaskCompletionMode @default(STRICT)
+  status         TaskStatus         @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  userId    String
+
+  notifications Notification[]
+  reminders     Reminder[]
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, status, dueDate])
+  @@index([userId, dueDate])
+  @@index([userId, endDate])
+}
+
+model Reminder {
+  id            String         @id @default(cuid())
+  remindAt      DateTime
+  type          ReminderType
+  sentAt        DateTime?
+  createdAt     DateTime       @default(now())
+  userId        String
+  taskId        String
+  attempts      Int            @default(0)
+  failedAt      DateTime?
+  failureReason String?
+  lastAttemptAt DateTime?
+  status        ReminderStatus @default(PENDING)
+  updatedAt     DateTime       @updatedAt
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, type])
+  @@index([userId])
+  @@index([taskId])
+  @@index([status, remindAt])
+}
+
+model DailyReminderDelivery {
+  id            String         @id @default(cuid())
+  localDate     String
+  status        ReminderStatus @default(PENDING)
+  attempts      Int            @default(0)
+  lastAttemptAt DateTime?
+  sentAt        DateTime?
+  failedAt      DateTime?
+  failureReason String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  userId        String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, localDate])
+  @@index([status, lastAttemptAt])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  title     String
+  message   String
+  type      NotificationType
+  read      Boolean          @default(false)
+  createdAt DateTime         @default(now())
+  userId    String
+  taskId    String?
+
+  task Task? @relation(fields: [taskId], references: [id])
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([userId, read])
+  @@index([userId, type])
+}
+
+model VerificationCode {
+  id           String               @id @default(cuid())
+  codeHash     String
+  type         VerificationCodeType
+  pendingEmail String?
+  expiresAt    DateTime
+  used         Boolean              @default(false)
+  createdAt    DateTime              @default(now())
+  userId       String
+  attempts     Int                  @default(0)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type, used])
+  @@index([expiresAt])
+}
+
+model UserPreference {
+  id                   String             @id @default(cuid())
+  pushNotifications    Boolean            @default(true)
+  dailyReminderEnabled Boolean            @default(true)
+  dailyReminderTime    String             @default("08:00")
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  userId               String             @unique
+  alarmReminders       Boolean            @default(true)
+  completionMode       TaskCompletionMode @default(STRICT)
+  timezone             String             @default("UTC")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PushToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  userId    String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model DeviceRecognition {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum TaskStatus {
+  PENDING
+  COMPLETED
+}
+
+enum TaskCompletionMode {
+  STRICT
+  FLEXIBLE
+}
+
+enum NotificationType {
+  ALARM
+  CREATED
+  UPDATED
+  DELETED
+}
+
+enum ReminderType {
+  SIX_MONTHS
+  THREE_MONTHS
+  THIRTY_DAYS
+  FIFTEEN_DAYS
+  THREE_DAYS
+  ONE_DAY
+  THIRTY_MINUTES
+  FIFTEEN_MINUTES
+  EXACT_TIME
+  TWO_YEARS
+  ONE_YEAR
+}
+
+enum ReminderStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+
+
+
+enum VerificationCodeType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+  EMAIL_CHANGE
+}
+

@@ -1,0 +1,29 @@
+{
+  "name": "taskflow-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "nodemon src/server.js",
+    "build": "prisma generate"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^18.0.4",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "luxon": "^3.7.2",
+    "node-cron": "^4.6.0",
+    "nodemailer": "^10.0.14",
+    "nodemon": "^3.1.14"
+  },
+  "devDependencies": {
+    "prisma": "^6.19.3"
+  }
+}
