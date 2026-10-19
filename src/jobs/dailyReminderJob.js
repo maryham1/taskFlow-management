@@ -2,7 +2,6 @@ import cron from "node-cron";
 import { DateTime } from "luxon";
 
 import { prisma } from "../config/db.js";
-
 import { createNotification } from "../services/notificationService.js";
 import { sendPushToUser } from "../services/pushNotificationService.js";
 
@@ -13,37 +12,38 @@ import { sendPushToUser } from "../services/pushNotificationService.js";
 const MAX_ATTEMPTS = 3;
 const PROCESSING_TIMEOUT_MS = 5 * 60 * 1000;
 const BATCH_SIZE = 100;
-
+const DEFAULT_REMINDER_TIME = "09:00";
 const DAILY_REMINDER_TYPE = "ALARM";
 
 let dailyJobRunning = false;
 let dailyCronTask = null;
 
 // ======================================================
-// TIMEZONE HELPERS
+// HELPERS
 // ======================================================
 
 const getLocalDateTime = (timezone) => {
-  const localDateTime = DateTime.now().setZone(timezone);
+  const dateTime = DateTime.now().setZone(timezone);
 
-  if (!localDateTime.isValid) {
+  if (!dateTime.isValid) {
     throw new Error(`Invalid timezone: ${timezone}`);
   }
 
-  return localDateTime;
+  return dateTime;
 };
 
+// This preserves your existing convention:
+// dueDate is stored as a UTC calendar date.
+// Confirm this matches your task creation controller.
 const isTaskDueToday = (dueDate, localDateTime) => {
+  if (!dueDate) return false;
+
   const taskDate = DateTime.fromJSDate(new Date(dueDate), {
     zone: "utc",
   });
 
-  if (!taskDate.isValid) {
-    return false;
-  }
+  if (!taskDate.isValid) return false;
 
-  // dueDate represents a calendar date stored in UTC.
-  // Compare its date components with the user's local day.
   return (
     taskDate.year === localDateTime.year &&
     taskDate.month === localDateTime.month &&
@@ -51,9 +51,9 @@ const isTaskDueToday = (dueDate, localDateTime) => {
   );
 };
 
-// ======================================================
-// BUILD DAILY REMINDER MESSAGE
-// ======================================================
+const isValidReminderTime = (value) => {
+  return typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+};
 
 const buildDailyReminderContent = (tasks) => {
   const title = "Today's tasks";
@@ -67,8 +67,22 @@ const buildDailyReminderContent = (tasks) => {
 
   return {
     title,
-    message: `You have ${tasks.length} tasks scheduled for today. Open TaskFlow to view your schedule.`,
+    message: `You have ${tasks.length} pending tasks scheduled for today. Open TaskFlow to view your schedule.`,
   };
+};
+
+const getUserPushTokens = (user) => {
+  if (!Array.isArray(user.pushTokens)) return [];
+
+  return [
+    ...new Set(
+      user.pushTokens
+        .map((item) => item?.token)
+        .filter(
+          (token) => typeof token === "string" && token.trim().length > 0,
+        ),
+    ),
+  ];
 };
 
 // ======================================================
@@ -78,7 +92,6 @@ const buildDailyReminderContent = (tasks) => {
 const recoverStaleDailyDeliveries = async () => {
   const staleCondition = {
     status: "PROCESSING",
-
     OR: [
       {
         lastAttemptAt: {
@@ -94,12 +107,10 @@ const recoverStaleDailyDeliveries = async () => {
   await prisma.dailyReminderDelivery.updateMany({
     where: {
       ...staleCondition,
-
       attempts: {
         lt: MAX_ATTEMPTS,
       },
     },
-
     data: {
       status: "PENDING",
       failedAt: null,
@@ -111,17 +122,15 @@ const recoverStaleDailyDeliveries = async () => {
   await prisma.dailyReminderDelivery.updateMany({
     where: {
       ...staleCondition,
-
       attempts: {
         gte: MAX_ATTEMPTS,
       },
     },
-
     data: {
       status: "FAILED",
       failedAt: new Date(),
       failureReason:
-        "Daily reminder processing was interrupted and maximum attempts were reached.",
+        "Processing was interrupted and maximum attempts were reached.",
     },
   });
 };
@@ -138,9 +147,7 @@ const claimDailyReminder = async (userId, localDate) => {
         localDate,
       },
     },
-
     update: {},
-
     create: {
       userId,
       localDate,
@@ -148,30 +155,26 @@ const claimDailyReminder = async (userId, localDate) => {
     },
   });
 
-  const result = await prisma.dailyReminderDelivery.updateMany({
+  const claimed = await prisma.dailyReminderDelivery.updateMany({
     where: {
       id: delivery.id,
       status: "PENDING",
-
       attempts: {
         lt: MAX_ATTEMPTS,
       },
     },
-
     data: {
       status: "PROCESSING",
-
       attempts: {
         increment: 1,
       },
-
       lastAttemptAt: new Date(),
       failedAt: null,
       failureReason: null,
     },
   });
 
-  if (result.count !== 1) {
+  if (claimed.count !== 1) {
     return null;
   }
 
@@ -183,16 +186,15 @@ const claimDailyReminder = async (userId, localDate) => {
 };
 
 // ======================================================
-// MARK DAILY REMINDER SENT
+// UPDATE DELIVERY STATUS
 // ======================================================
 
 const markDailyReminderSent = async (deliveryId) => {
-  return prisma.dailyReminderDelivery.updateMany({
+  await prisma.dailyReminderDelivery.updateMany({
     where: {
       id: deliveryId,
       status: "PROCESSING",
     },
-
     data: {
       status: "SENT",
       sentAt: new Date(),
@@ -202,25 +204,66 @@ const markDailyReminderSent = async (deliveryId) => {
   });
 };
 
-// ======================================================
-// MARK DAILY REMINDER FAILED
-// ======================================================
-
 const markDailyReminderFailed = async (deliveryId, attempts, reason) => {
   const exhausted = attempts >= MAX_ATTEMPTS;
 
-  return prisma.dailyReminderDelivery.updateMany({
+  await prisma.dailyReminderDelivery.updateMany({
     where: {
       id: deliveryId,
       status: "PROCESSING",
     },
-
     data: {
       status: exhausted ? "FAILED" : "PENDING",
       failedAt: exhausted ? new Date() : null,
-      failureReason: reason || "Daily reminder delivery failed",
+      failureReason: reason || "Daily reminder push delivery failed",
     },
   });
+};
+
+// ======================================================
+// CREATE IN-APP DAILY NOTIFICATION
+// ======================================================
+
+const createDailyInAppNotification = async ({
+  userId,
+  localDate,
+  title,
+  message,
+}) => {
+  const marker = `daily:${userId}:${localDate}`;
+
+  try {
+    const existing = await prisma.notification.findFirst({
+      where: {
+        userId,
+        type: DAILY_REMINDER_TYPE,
+        title,
+        message: {
+          startsWith: `[${marker}]`,
+        },
+      },
+    });
+
+    if (existing) {
+      return true;
+    }
+
+    await createNotification({
+      userId,
+      title,
+      message: `[${marker}] ${message}`,
+      type: DAILY_REMINDER_TYPE,
+    });
+
+    return true;
+  } catch (error) {
+    console.error(
+      `[Daily Reminder] In-app notification failed for user ${userId}:`,
+      error,
+    );
+
+    return false;
+  }
 };
 
 // ======================================================
@@ -228,136 +271,103 @@ const markDailyReminderFailed = async (deliveryId, attempts, reason) => {
 // ======================================================
 
 const deliverDailyReminder = async ({ user, tasks, localDate }) => {
-  if (tasks.length === 0) {
-    return {
-      delivered: false,
-      reason: "NO_TASKS_TODAY",
-    };
-  }
-
   const { title, message } = buildDailyReminderContent(tasks);
 
-  let pushAttempted = false;
-  let pushSucceeded = false;
-  let inAppSucceeded = false;
-
-  // ====================================================
-  // IN-APP NOTIFICATION
-  // ====================================================
-
-  // Use a stable delivery marker to avoid creating
-  // duplicate daily notifications on ordinary retries.
-  const notificationMarker = `daily:${user.id}:${localDate}`;
-
-  const existingNotification = await prisma.notification.findFirst({
-    where: {
-      userId: user.id,
-      type: DAILY_REMINDER_TYPE,
-      title,
-      message: {
-        startsWith: `[${notificationMarker}]`,
-      },
-    },
+  const inAppSucceeded = await createDailyInAppNotification({
+    userId: user.id,
+    localDate,
+    title,
+    message,
   });
-
-  if (existingNotification) {
-    inAppSucceeded = true;
-  } else {
-    try {
-      await createNotification({
-        userId: user.id,
-        title,
-        message: `[${notificationMarker}] ${message}`,
-        type: DAILY_REMINDER_TYPE,
-      });
-
-      inAppSucceeded = true;
-    } catch (error) {
-      console.error(
-        `Daily in-app notification failed for user ${user.id}:`,
-        error,
-      );
-    }
-  }
-
-  // ====================================================
-  // EXPO PUSH NOTIFICATION
-  // ====================================================
 
   const pushEnabled = user.preference?.pushNotifications === true;
 
-  const tokens = Array.isArray(user.pushTokens)
-    ? [
-        ...new Set(
-          user.pushTokens
-            .map((item) => item?.token)
-            .filter(
-              (token) => typeof token === "string" && token.trim().length > 0,
-            ),
-        ),
-      ]
-    : [];
+  const tokens = getUserPushTokens(user);
 
-  if (pushEnabled && tokens.length > 0) {
-    pushAttempted = true;
-
-    try {
-      const results = await sendPushToUser({
-        tokens,
-        title,
-        body: message,
-
-        data: {
-          type: "DAILY_REMINDER",
-          localDate,
-        },
-      });
-
-      pushSucceeded =
-        Array.isArray(results) &&
-        results.some((result) => result.success === true);
-
-      const failedResults = Array.isArray(results)
-        ? results.filter((result) => !result.success)
-        : [];
-
-      if (failedResults.length > 0) {
-        console.error(
-          `Some daily push notifications failed for user ${user.id}:`,
-          failedResults,
-        );
-      }
-    } catch (error) {
-      console.error(
-        `Daily push notification failed for user ${user.id}:`,
-        error,
-      );
-    }
-  }
-
-  const delivered = inAppSucceeded || pushSucceeded;
-
-  let reason;
-
-  if (!pushAttempted && inAppSucceeded) {
-    reason = "IN_APP_ONLY";
-  } else if (pushAttempted && !pushSucceeded && inAppSucceeded) {
-    reason = "PUSH_FAILED_IN_APP_SUCCEEDED";
-  } else if (!delivered) {
-    reason = "DELIVERY_FAILED";
-  }
-
-  return {
-    delivered,
-    reason,
-    pushAttempted,
-    pushSucceeded,
+  console.log("[Daily Reminder] Delivery preparation", {
+    userId: user.id,
+    localDate,
+    taskCount: tasks.length,
+    pushEnabled,
+    tokenCount: tokens.length,
     inAppSucceeded,
-  };
+  });
+
+  // A successful in-app notification is NOT considered
+  // successful phone push delivery.
+
+  if (!pushEnabled) {
+    return {
+      delivered: false,
+      reason: "PUSH_NOTIFICATIONS_DISABLED",
+      inAppSucceeded,
+      pushSucceeded: false,
+    };
+  }
+
+  if (tokens.length === 0) {
+    return {
+      delivered: false,
+      reason: "NO_REGISTERED_PUSH_TOKENS",
+      inAppSucceeded,
+      pushSucceeded: false,
+    };
+  }
+
+  try {
+    const results = await sendPushToUser({
+      tokens,
+      title,
+      body: message,
+      data: {
+        type: "DAILY_REMINDER",
+        localDate,
+      },
+    });
+
+    const accepted = Array.isArray(results)
+      ? results.filter((result) => result.success === true)
+      : [];
+
+    const rejected = Array.isArray(results)
+      ? results.filter((result) => result.success !== true)
+      : [];
+
+    console.log("[Daily Reminder] Expo push results", {
+      userId: user.id,
+      acceptedCount: accepted.length,
+      rejectedCount: rejected.length,
+      ticketIds: accepted.map((result) => result.ticketId).filter(Boolean),
+      errors: rejected.map((result) => ({
+        reason: result.reason,
+        error: result.error,
+      })),
+    });
+
+    // At least one device token must receive an accepted
+    // Expo push ticket. This is not proof of device receipt.
+    const pushSucceeded = accepted.length > 0;
+
+    return {
+      delivered: pushSucceeded,
+      reason: pushSucceeded ? "EXPO_PUSH_ACCEPTED" : "EXPO_PUSH_REJECTED",
+      inAppSucceeded,
+      pushSucceeded,
+    };
+  } catch (error) {
+    console.error(`[Daily Reminder] Push failed for user ${user.id}:`, error);
+
+    return {
+      delivered: false,
+      reason: "PUSH_REQUEST_FAILED",
+      inAppSucceeded,
+      pushSucceeded: false,
+    };
+  }
 };
 
 // ======================================================
-// PROCESS SINGLE USER
+// PROCESS ONE USER
 // ======================================================
 
 const processUserDailyReminder = async (user) => {
@@ -374,15 +384,24 @@ const processUserDailyReminder = async (user) => {
   try {
     localDateTime = getLocalDateTime(timezone);
   } catch (error) {
-    console.error(`Invalid timezone for user ${user.id}:`, error.message);
+    console.error(
+      `[Daily Reminder] Invalid timezone for user ${user.id}:`,
+      error.message,
+    );
 
     return;
   }
 
-  const scheduledTime = preference.dailyReminderTime || "09:00";
+  const savedTime = preference.dailyReminderTime;
 
-  // Never deliver before the user's configured time.
-  if (localDateTime.toFormat("HH:mm") < scheduledTime) {
+  const scheduledTime = isValidReminderTime(savedTime)
+    ? savedTime
+    : DEFAULT_REMINDER_TIME;
+
+  const currentTime = localDateTime.toFormat("HH:mm");
+  const localDate = localDateTime.toFormat("yyyy-MM-dd");
+
+  if (currentTime < scheduledTime) {
     return;
   }
 
@@ -394,13 +413,21 @@ const processUserDailyReminder = async (user) => {
     return;
   }
 
-  const localDate = localDateTime.toFormat("yyyy-MM-dd");
-
   const delivery = await claimDailyReminder(user.id, localDate);
 
   if (!delivery) {
     return;
   }
+
+  console.log("[Daily Reminder] Processing user", {
+    userId: user.id,
+    timezone,
+    localDate,
+    currentTime,
+    scheduledTime,
+    taskCount: tasks.length,
+    attempt: delivery.attempts,
+  });
 
   try {
     const result = await deliverDailyReminder({
@@ -412,17 +439,23 @@ const processUserDailyReminder = async (user) => {
     if (result.delivered) {
       await markDailyReminderSent(delivery.id);
 
-      if (result.pushAttempted && !result.pushSucceeded) {
-        console.warn(
-          `Daily in-app reminder succeeded but push failed for user ${user.id}`,
-        );
-      }
+      console.log("[Daily Reminder] Push accepted", {
+        userId: user.id,
+        localDate,
+      });
     } else {
       await markDailyReminderFailed(
         delivery.id,
         delivery.attempts,
         result.reason,
       );
+
+      console.warn("[Daily Reminder] Delivery attempt failed", {
+        userId: user.id,
+        localDate,
+        attempt: delivery.attempts,
+        reason: result.reason,
+      });
     }
   } catch (error) {
     await markDailyReminderFailed(
@@ -431,12 +464,15 @@ const processUserDailyReminder = async (user) => {
       error.message,
     );
 
-    console.error(`Daily reminder failed for user ${user.id}:`, error);
+    console.error(
+      `[Daily Reminder] Unexpected error for user ${user.id}:`,
+      error,
+    );
   }
 };
 
 // ======================================================
-// PROCESS DAILY REMINDERS
+// PROCESS ALL ELIGIBLE USERS
 // ======================================================
 
 export const processDailyReminders = async () => {
@@ -458,24 +494,19 @@ export const processDailyReminders = async () => {
             dailyReminderEnabled: true,
           },
         },
-
         include: {
           preference: true,
           pushTokens: true,
-
           tasks: {
             where: {
               status: "PENDING",
             },
           },
         },
-
         orderBy: {
           id: "asc",
         },
-
         take: BATCH_SIZE,
-
         ...(cursor
           ? {
               cursor: { id: cursor },
@@ -493,7 +524,7 @@ export const processDailyReminders = async () => {
           await processUserDailyReminder(user);
         } catch (error) {
           console.error(
-            `Failed to process daily reminder for user ${user.id}:`,
+            `[Daily Reminder] User processing failed: ${user.id}`,
             error,
           );
         }
@@ -506,19 +537,20 @@ export const processDailyReminders = async () => {
       }
     }
   } catch (error) {
-    console.error("Daily reminder job failed:", error);
+    console.error("[Daily Reminder] Scheduler failed:", error);
   } finally {
     dailyJobRunning = false;
   }
 };
 
 // ======================================================
-// START DAILY REMINDER CRON JOB
+// START DAILY REMINDER SCHEDULER
 // ======================================================
 
 export const startDailyReminderJob = () => {
   if (dailyCronTask) {
-    console.warn("Daily reminder job is already running");
+    console.warn("[Daily Reminder] Scheduler is already running");
+
     return dailyCronTask;
   }
 
@@ -532,7 +564,7 @@ export const startDailyReminderJob = () => {
     },
   );
 
-  console.log("Daily reminder job started");
+  console.log("[Daily Reminder] Scheduler started (every minute)");
 
   return dailyCronTask;
 };
