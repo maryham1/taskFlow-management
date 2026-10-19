@@ -1,4 +1,4 @@
-import nodemailer from "nodemailer";
+import sgMail from "@sendgrid/mail";
 
 // ======================================================
 // EMAIL CONFIGURATION
@@ -7,67 +7,34 @@ import nodemailer from "nodemailer";
 const EMAIL_CODE_EXPIRY_MINUTES = 10;
 
 const getEmailConfig = () => {
-  const { EMAIL_HOST, EMAIL_PORT, EMAIL_USER, EMAIL_PASSWORD, EMAIL_FROM } =
+  const { SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME } =
     process.env;
 
-  const port = Number(EMAIL_PORT);
-
-  if (
-    !EMAIL_HOST ||
-    !EMAIL_PORT ||
-    !EMAIL_USER ||
-    !EMAIL_PASSWORD ||
-    !EMAIL_FROM
-  ) {
+  if (!SENDGRID_API_KEY || !SENDGRID_FROM_EMAIL || !SENDGRID_FROM_NAME) {
     throw new Error(
-      "Email configuration is incomplete. Check your SMTP environment variables.",
+      "Email configuration is incomplete. Check your SendGrid environment variables.",
     );
   }
 
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error("EMAIL_PORT must be a valid port number");
-  }
-
   return {
-    host: EMAIL_HOST,
-    port,
-    secure: port === 465,
-
-    auth: {
-      user: EMAIL_USER,
-      pass: EMAIL_PASSWORD,
+    apiKey: SENDGRID_API_KEY.trim(),
+    from: {
+      email: SENDGRID_FROM_EMAIL.trim(),
+      name: SENDGRID_FROM_NAME.trim(),
     },
-
-    from: EMAIL_FROM,
   };
 };
 
 // ======================================================
-// SMTP TRANSPORTER
+// SENDGRID CLIENT
 // ======================================================
 
-let transporter = null;
+const getSendGridClient = () => {
+  const config = getEmailConfig();
 
-const getTransporter = () => {
-  if (!transporter) {
-    const config = getEmailConfig();
+  sgMail.setApiKey(config.apiKey);
 
-    transporter = nodemailer.createTransport({
-      host: config.host,
-      port: config.port,
-      secure: config.secure,
-
-      requireTLS: !config.secure,
-
-      auth: config.auth,
-
-      connectionTimeout: 15000,
-      greetingTimeout: 15000,
-      socketTimeout: 20000,
-    });
-  }
-
-  return transporter;
+  return sgMail;
 };
 
 // ======================================================
@@ -256,13 +223,19 @@ const buildEmailHtml = ({
   `.trim();
 };
 
+// ======================================================
+// SEND EMAIL USING SENDGRID API
+// ======================================================
+
 const sendEmail = async ({ email, subject, text, html }) => {
   validateRecipient(email);
 
   const config = getEmailConfig();
 
   try {
-    const info = await getTransporter().sendMail({
+    const client = getSendGridClient();
+
+    const [response] = await client.send({
       from: config.from,
       to: email.trim(),
       subject,
@@ -270,25 +243,32 @@ const sendEmail = async ({ email, subject, text, html }) => {
       html,
     });
 
-    console.info(`TaskFlow email accepted by SMTP for ${email.trim()}`, {
-      messageId: info.messageId,
-      accepted: info.accepted.length,
-      rejected: info.rejected.length,
-    });
-
-    if (!info.accepted.includes(email.trim())) {
-      throw new Error("The SMTP server did not accept the recipient");
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw new Error(
+        `SendGrid rejected the email request with status ${response.statusCode}`,
+      );
     }
+
+    const messageId = response.headers?.["x-message-id"] ?? null;
+
+    console.info(`TaskFlow email accepted by SendGrid for ${email.trim()}`, {
+      statusCode: response.statusCode,
+      messageId,
+    });
 
     return {
       success: true,
-      messageId: info.messageId,
+      messageId,
     };
   } catch (error) {
-    console.error(
-      `TaskFlow email delivery failed for ${email.trim()}:`,
-      error.message,
-    );
+    console.error(`TaskFlow email delivery failed for ${email.trim()}:`, {
+      message: error.message,
+      statusCode: error.code,
+      details: error.response?.body?.errors?.map((item) => ({
+        message: item.message,
+        field: item.field,
+      })),
+    });
 
     throw error;
   }
