@@ -39,11 +39,11 @@ const REMINDER_SCHEDULE = [
   },
   {
     type: "THIRTY_MINUTES",
-    subtract: { minutes: 5 },
+    subtract: { minutes: 30 },
   },
   {
     type: "FIFTEEN_MINUTES",
-    subtract: { minutes: 2 },
+    subtract: { minutes: 15 },
   },
 ];
 
