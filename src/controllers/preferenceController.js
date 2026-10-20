@@ -13,7 +13,7 @@ const DEFAULT_PREFERENCES = {
   alarmReminders: true,
   dailyReminderEnabled: true,
   dailyReminderTime: "08:00",
-  timezone: "Africa/Lagos",
+  timezone: "UTC",
   completionMode: "STRICT",
 };
 
