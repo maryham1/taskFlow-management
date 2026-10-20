@@ -12,7 +12,7 @@ import { sendPushToUser } from "../services/pushNotificationService.js";
 const MAX_ATTEMPTS = 3;
 const PROCESSING_TIMEOUT_MS = 5 * 60 * 1000;
 const BATCH_SIZE = 100;
-const DEFAULT_REMINDER_TIME = "09:30";
+const DEFAULT_REMINDER_TIME = "10:20";
 const DAILY_REMINDER_TYPE = "ALARM";
 
 let dailyJobRunning = false;
@@ -377,7 +377,7 @@ const processUserDailyReminder = async (user) => {
     return;
   }
 
-  const timezone = preference.timezone || "UTC";
+  const timezone = preference.timezone || "Africa/Lagos";
 
   let localDateTime;
 

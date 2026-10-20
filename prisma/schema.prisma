@@ -141,7 +141,7 @@ model UserPreference {
   id                   String             @id @default(cuid())
   pushNotifications    Boolean            @default(true)
   dailyReminderEnabled Boolean            @default(true)
-  dailyReminderTime    String             @default("09:30")
+  dailyReminderTime    String             @default("10:20")
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
   userId               String             @unique
