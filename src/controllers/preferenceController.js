@@ -1,12 +1,7 @@
-import { DateTime, IANAZone } from "luxon";
+import { IANAZone } from "luxon";
 
 import { prisma } from "../config/db.js";
-
 import { replaceTaskReminders } from "../services/reminderService.js";
-
-// ======================================================
-// DEFAULT PREFERENCES
-// ======================================================
 
 const DEFAULT_PREFERENCES = {
   pushNotifications: true,
@@ -16,10 +11,6 @@ const DEFAULT_PREFERENCES = {
   timezone: "UTC",
   completionMode: "STRICT",
 };
-
-// ======================================================
-// CONSTANTS
-// ======================================================
 
 const BOOLEAN_FIELDS = [
   "pushNotifications",
@@ -35,12 +26,7 @@ const ALLOWED_FIELDS = [
 ];
 
 const VALID_COMPLETION_MODES = ["STRICT", "FLEXIBLE"];
-
 const TIME_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
-
-// ======================================================
-// VALIDATION
-// ======================================================
 
 const validatePreferenceChanges = (body) => {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
@@ -97,28 +83,16 @@ const validatePreferenceChanges = (body) => {
   return changes;
 };
 
-// ======================================================
-// GET OR CREATE PREFERENCES
-// ======================================================
-
 const getOrCreatePreferences = async (userId) => {
   return prisma.userPreference.upsert({
-    where: {
-      userId,
-    },
-
+    where: { userId },
     update: {},
-
     create: {
       userId,
       ...DEFAULT_PREFERENCES,
     },
   });
 };
-
-// ======================================================
-// REGENERATE REMINDERS AFTER TIMEZONE CHANGE
-// ======================================================
 
 const regenerateTaskReminders = async (userId, timezone) => {
   const tasks = await prisma.task.findMany({
@@ -155,29 +129,18 @@ const regenerateTaskReminders = async (userId, timezone) => {
   return results;
 };
 
-// ======================================================
-// GET PREFERENCES
-// ======================================================
-
 export const getPreferences = async (req, res, next) => {
   try {
     const preference = await getOrCreatePreferences(req.user.id);
 
     return res.status(200).json({
       success: true,
-
-      data: {
-        preference,
-      },
+      data: { preference },
     });
   } catch (error) {
     next(error);
   }
 };
-
-// ======================================================
-// UPDATE PREFERENCES
-// ======================================================
 
 export const updatePreferences = async (req, res, next) => {
   try {
@@ -194,15 +157,21 @@ export const updatePreferences = async (req, res, next) => {
 
     const currentPreference = await getOrCreatePreferences(req.user.id);
 
+    // Daily reminders always run at 8:00 AM in the user's saved timezone.
+    if (changes.dailyReminderEnabled === true) {
+      changes.pushNotifications = true;
+      changes.dailyReminderTime = "08:00";
+    }
+
+    const effectiveTimezone =
+      changes.timezone ?? currentPreference.timezone ?? "UTC";
+
     const timezoneChanged =
       changes.timezone !== undefined &&
       changes.timezone !== currentPreference.timezone;
 
     const preference = await prisma.userPreference.update({
-      where: {
-        userId: req.user.id,
-      },
-
+      where: { userId: req.user.id },
       data: changes,
     });
 
@@ -211,20 +180,16 @@ export const updatePreferences = async (req, res, next) => {
     if (timezoneChanged) {
       reminderSync = await regenerateTaskReminders(
         req.user.id,
-        preference.timezone,
+        effectiveTimezone,
       );
     }
 
     return res.status(200).json({
       success: true,
       message: "Preferences updated successfully",
-
       data: {
         preference,
-
-        ...(reminderSync && {
-          reminderSync,
-        }),
+        ...(reminderSync && { reminderSync }),
       },
     });
   } catch (error) {

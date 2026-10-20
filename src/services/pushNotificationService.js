@@ -5,7 +5,6 @@ import { setTimeout as delay } from "node:timers/promises";
 // ======================================================
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
-
 const EXPO_RECEIPTS_URL = "https://exp.host/--/api/v2/push/getReceipts";
 
 const REQUEST_TIMEOUT_MS = 15000;
@@ -37,14 +36,11 @@ const expoRequest = async (url, payload) => {
   try {
     const response = await fetch(url, {
       method: "POST",
-
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
       },
-
       body: JSON.stringify(payload),
-
       signal: controller.signal,
     });
 
@@ -71,16 +67,14 @@ const expoRequest = async (url, payload) => {
 // BUILD PUSH MESSAGE
 // ======================================================
 
-const buildPushMessage = ({ token, title, body, data = {} }) => {
-  return {
-    to: token,
-    sound: "default",
-    title,
-    body,
-    data,
-    priority: "high",
-  };
-};
+const buildPushMessage = ({ token, title, body, data = {} }) => ({
+  to: token,
+  sound: "default",
+  title,
+  body,
+  data,
+  priority: "high",
+});
 
 // ======================================================
 // SEND SINGLE PUSH NOTIFICATION
@@ -103,12 +97,7 @@ export const sendPushNotification = async ({
   try {
     const result = await expoRequest(
       EXPO_PUSH_URL,
-      buildPushMessage({
-        token,
-        title,
-        body,
-        data,
-      }),
+      buildPushMessage({ token, title, body, data }),
     );
 
     const ticket = Array.isArray(result.data) ? result.data[0] : result.data;
@@ -150,12 +139,10 @@ export const sendPushNotification = async ({
   } catch (error) {
     return {
       success: false,
-
       reason:
         error.name === "AbortError"
           ? "PUSH_REQUEST_TIMEOUT"
           : "PUSH_REQUEST_ERROR",
-
       error: error.message,
       token,
     };
@@ -181,8 +168,6 @@ export const sendPushToUser = async ({ tokens, title, body, data = {} }) => {
 
   const results = [];
 
-  // Expo supports batches of push messages.
-  // Process tokens in controlled groups.
   for (let index = 0; index < uniqueTokens.length; index += MAX_BATCH_SIZE) {
     const batch = uniqueTokens.slice(index, index + MAX_BATCH_SIZE);
 
@@ -247,7 +232,6 @@ export const checkPushReceipt = async (ticketId) => {
 
   try {
     const receipts = await getPushReceipts([ticketId]);
-
     const receipt = receipts[ticketId];
 
     if (!receipt) {
