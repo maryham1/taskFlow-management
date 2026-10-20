@@ -12,7 +12,7 @@ const DEFAULT_PREFERENCES = {
   pushNotifications: true,
   alarmReminders: true,
   dailyReminderEnabled: true,
-  dailyReminderTime: "10:20",
+  dailyReminderTime: "08:00",
   timezone: "Africa/Lagos",
   completionMode: "STRICT",
 };
