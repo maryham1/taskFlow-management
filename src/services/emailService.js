@@ -1,4 +1,4 @@
-import sgMail from "@sendgrid/mail";
+import { Resend } from "resend";
 
 // ======================================================
 // EMAIL CONFIGURATION
@@ -7,34 +7,28 @@ import sgMail from "@sendgrid/mail";
 const EMAIL_CODE_EXPIRY_MINUTES = 10;
 
 const getEmailConfig = () => {
-  const { SENDGRID_API_KEY, SENDGRID_FROM_EMAIL, SENDGRID_FROM_NAME } =
-    process.env;
+  const { RESEND_API_KEY, RESEND_FROM_EMAIL, RESEND_FROM_NAME } = process.env;
 
-  if (!SENDGRID_API_KEY || !SENDGRID_FROM_EMAIL || !SENDGRID_FROM_NAME) {
+  if (!RESEND_API_KEY || !RESEND_FROM_EMAIL || !RESEND_FROM_NAME) {
     throw new Error(
-      "Email configuration is incomplete. Check your SendGrid environment variables.",
+      "Email configuration is incomplete. Check your Resend environment variables.",
     );
   }
 
   return {
-    apiKey: SENDGRID_API_KEY.trim(),
-    from: {
-      email: SENDGRID_FROM_EMAIL.trim(),
-      name: SENDGRID_FROM_NAME.trim(),
-    },
+    apiKey: RESEND_API_KEY.trim(),
+    fromEmail: RESEND_FROM_EMAIL.trim(),
+    fromName: RESEND_FROM_NAME.trim(),
   };
 };
 
 // ======================================================
-// SENDGRID CLIENT
+// RESEND CLIENT
 // ======================================================
 
-const getSendGridClient = () => {
+const getResendClient = () => {
   const config = getEmailConfig();
-
-  sgMail.setApiKey(config.apiKey);
-
-  return sgMail;
+  return new Resend(config.apiKey);
 };
 
 // ======================================================
@@ -64,6 +58,10 @@ const validateCode = (code) => {
     throw new Error("A valid six-digit code is required");
   }
 };
+
+// ======================================================
+// EMAIL HTML TEMPLATE
+// ======================================================
 
 const buildEmailHtml = ({
   greeting,
@@ -224,7 +222,7 @@ const buildEmailHtml = ({
 };
 
 // ======================================================
-// SEND EMAIL USING SENDGRID API
+// SEND EMAIL USING RESEND API
 // ======================================================
 
 const sendEmail = async ({ email, subject, text, html }) => {
@@ -233,41 +231,46 @@ const sendEmail = async ({ email, subject, text, html }) => {
   const config = getEmailConfig();
 
   try {
-    const client = getSendGridClient();
+    const resend = getResendClient();
 
-    const [response] = await client.send({
-      from: config.from,
-      to: email.trim(),
+    const { data, error } = await resend.emails.send({
+      from: `${config.fromName} <${config.fromEmail}>`,
+      to: [email.trim()],
       subject,
       text,
       html,
     });
 
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw new Error(
-        `SendGrid rejected the email request with status ${response.statusCode}`,
-      );
+    if (error) {
+      console.error("TaskFlow email sending failed:", {
+        recipient: email.trim(),
+        message: error.message,
+        statusCode: error.statusCode,
+        name: error.name,
+      });
+
+      throw new Error(`Resend failed to send the email: ${error.message}`);
     }
 
-    const messageId = response.headers?.["x-message-id"] ?? null;
+    if (!data?.id) {
+      throw new Error("Resend did not return an email ID.");
+    }
 
-    console.info(`TaskFlow email accepted by SendGrid for ${email.trim()}`, {
-      statusCode: response.statusCode,
-      messageId,
+    console.info("TaskFlow email accepted by Resend:", {
+      recipient: email.trim(),
+      messageId: data.id,
     });
 
     return {
       success: true,
-      messageId,
+      messageId: data.id,
     };
   } catch (error) {
-    console.error(`TaskFlow email delivery failed for ${email.trim()}:`, {
+    console.error("TaskFlow email request error:", {
+      recipient: email.trim(),
       message: error.message,
-      statusCode: error.code,
-      details: error.response?.body?.errors?.map((item) => ({
-        message: item.message,
-        field: item.field,
-      })),
+      statusCode: error.statusCode,
+      name: error.name,
     });
 
     throw error;
@@ -286,7 +289,6 @@ export const sendRegistrationEmail = async ({
   validateCode(verificationCode);
 
   const name = fullName?.trim() || "there";
-
   const subject = "Welcome to TaskFlow - Verify your email";
 
   const text = `
@@ -310,25 +312,17 @@ Thank you for choosing TaskFlow.
   const html = buildEmailHtml({
     greeting: `Hello ${name},`,
     heading: "Verify your email address",
-
     paragraphs: [
       "Welcome to TaskFlow! Your account has been created successfully.",
       "Enter the six-digit code below to verify your email address.",
       `This code expires in ${EMAIL_CODE_EXPIRY_MINUTES} minutes.`,
     ],
-
     code: verificationCode,
-
     footer:
       "If you did not create this account, you can safely ignore this email.",
   });
 
-  return sendEmail({
-    email,
-    subject,
-    text,
-    html,
-  });
+  return sendEmail({ email, subject, text, html });
 };
 
 // ======================================================
@@ -337,7 +331,6 @@ Thank you for choosing TaskFlow.
 
 export const sendFirstLoginEmail = async ({ email, fullName }) => {
   const name = fullName?.trim() || "there";
-
   const subject = "Welcome to TaskFlow";
 
   const text = `
@@ -357,22 +350,15 @@ Happy planning!
   const html = buildEmailHtml({
     greeting: `Hello ${name},`,
     heading: "Welcome to TaskFlow!",
-
     paragraphs: [
       "You've successfully logged into your TaskFlow account.",
       "You can now create tasks, organize your schedule, set reminders, and track your progress.",
       "We're happy to have you with us. Happy planning!",
     ],
-
     footer: "This is a welcome message from TaskFlow.",
   });
 
-  return sendEmail({
-    email,
-    subject,
-    text,
-    html,
-  });
+  return sendEmail({ email, subject, text, html });
 };
 
 // ======================================================
@@ -387,7 +373,6 @@ export const sendPasswordResetEmail = async ({
   validateCode(resetCode);
 
   const name = fullName?.trim() || "there";
-
   const subject = "Reset your TaskFlow password";
 
   const text = `
@@ -409,26 +394,18 @@ For your security, do not share this code with anyone.
   const html = buildEmailHtml({
     greeting: `Hello ${name},`,
     heading: "Reset your password",
-
     paragraphs: [
       "We received a request to reset your TaskFlow password.",
       "Use the six-digit code below to continue.",
       `This code expires in ${EMAIL_CODE_EXPIRY_MINUTES} minutes.`,
       "For your security, do not share this code with anyone.",
     ],
-
     code: resetCode,
-
     footer:
       "If you did not request a password reset, you can safely ignore this email.",
   });
 
-  return sendEmail({
-    email,
-    subject,
-    text,
-    html,
-  });
+  return sendEmail({ email, subject, text, html });
 };
 
 // ======================================================
@@ -437,7 +414,6 @@ For your security, do not share this code with anyone.
 
 export const sendPasswordChangedEmail = async ({ email, fullName }) => {
   const name = fullName?.trim() || "there";
-
   const subject = "Your TaskFlow password was changed";
 
   const text = `
@@ -453,22 +429,15 @@ If you did not change your password, please secure your account immediately.
   const html = buildEmailHtml({
     greeting: `Hello ${name},`,
     heading: "Password changed successfully",
-
     paragraphs: [
       "Your TaskFlow password has been changed successfully.",
       "If you made this change, no further action is required.",
       "If you did not make this change, please secure your account immediately.",
     ],
-
     footer: "This is an automated security notification from TaskFlow.",
   });
 
-  return sendEmail({
-    email,
-    subject,
-    text,
-    html,
-  });
+  return sendEmail({ email, subject, text, html });
 };
 
 // ======================================================
@@ -484,7 +453,6 @@ export const sendEmailChangeVerificationEmail = async ({
   validateCode(verificationCode);
 
   const name = fullName?.trim() || "there";
-
   const subject = "Verify your new TaskFlow email address";
 
   const text = `
@@ -510,25 +478,17 @@ Thank you for using TaskFlow.
   const html = buildEmailHtml({
     greeting: `Hello ${name},`,
     heading: "Verify your new email address",
-
     paragraphs: [
       "We received a request to change the email address associated with your TaskFlow account.",
       "Enter the six-digit verification code below to confirm your new email address.",
       `This code expires in ${EMAIL_CODE_EXPIRY_MINUTES} minutes.`,
       "Your current email address will remain unchanged until verification is successful.",
-      "For your security, never share this code with anyone.",
+      "For your security, never share this verification code with anyone.",
     ],
-
     code: verificationCode,
-
     footer:
       "If you did not request this email change, please ignore this message and secure your TaskFlow account.",
   });
 
-  return sendEmail({
-    email,
-    subject,
-    text,
-    html,
-  });
+  return sendEmail({ email, subject, text, html });
 };
